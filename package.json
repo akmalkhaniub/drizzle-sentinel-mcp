@@ -1,0 +1,24 @@
+{
+  "name": "drizzle-sentinel-mcp-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade TypeScript MCP server for Drizzle ORM schema inspection, migration safety linting, and drift detection.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "vitest run",
+    "dev:mcp": "node --import tsx packages/mcp-server/src/index.ts",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.0.0"
+  },
+  "packageManager": "npm@10.8.0"
+}

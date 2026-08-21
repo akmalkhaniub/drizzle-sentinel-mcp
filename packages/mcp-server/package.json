@@ -1,0 +1,25 @@
+{
+  "name": "@drizzle-sentinel/mcp-server",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "drizzle-sentinel-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --import tsx src/index.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "@drizzle-sentinel/rules-engine": "*",
+    "zod": "^3.24.2",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
