@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import * as fs from 'fs';
 import { lintSqlMigration } from '@drizzle-sentinel/rules-engine';
+import { redactSensitiveText, resolveSafeWorkspacePath } from '../security.js';
 
 export const lintMigrationSchema = z.object({
-  sqlContent: z.string().optional().describe('Raw SQL migration script text to lint.'),
-  migrationFilePath: z.string().optional().describe('Path to the .sql migration file to lint.'),
+  sqlContent: z.string().max(100_000).optional().describe('Raw SQL migration script text to lint.'),
+  migrationFilePath: z.string().min(1).max(512).optional().describe('Path to the .sql migration file to lint.'),
   dialect: z.enum(['postgresql', 'sqlite', 'mysql']).default('postgresql').describe('Target database dialect.')
-});
+}).strict();
 
 export type LintMigrationInput = z.input<typeof lintMigrationSchema>;
 
@@ -16,10 +17,11 @@ export async function handleLintMigration(rawInput: LintMigrationInput) {
     let sql = input.sqlContent;
 
     if (!sql && input.migrationFilePath) {
-      if (!fs.existsSync(input.migrationFilePath)) {
+      const safePath = resolveSafeWorkspacePath(input.migrationFilePath, { allowedExtensions: ['.sql'] });
+      if (!fs.existsSync(safePath)) {
         throw new Error(`Migration file not found: ${input.migrationFilePath}`);
       }
-      sql = fs.readFileSync(input.migrationFilePath, 'utf-8');
+      sql = fs.readFileSync(safePath, 'utf-8');
     }
 
     if (!sql) {
@@ -44,7 +46,8 @@ export async function handleLintMigration(rawInput: LintMigrationInput) {
           type: 'text' as const,
           text: JSON.stringify(summary, null, 2)
         }
-      ]
+      ],
+      structuredContent: summary
     };
   } catch (error: any) {
     return {
@@ -52,7 +55,7 @@ export async function handleLintMigration(rawInput: LintMigrationInput) {
       content: [
         {
           type: 'text' as const,
-          text: `Migration linting failed: ${error.message}`
+          text: `Migration linting failed: ${redactSensitiveText(error?.message || String(error))}`
         }
       ]
     };

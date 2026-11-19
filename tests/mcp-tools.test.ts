@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
-import { handleInspectSchema } from '../packages/mcp-server/src/tools/inspect-schema.js';
+import { handleInspectSchema, inspectSchemaSchema } from '../packages/mcp-server/src/tools/inspect-schema.js';
 import { handleLintMigration } from '../packages/mcp-server/src/tools/lint-migration.js';
 import { handleDetectSchemaDrift } from '../packages/mcp-server/src/tools/drift-doctor.js';
-import { handleExplainQueryPlan } from '../packages/mcp-server/src/tools/query-sandbox.js';
+import { handleExplainQueryPlan, explainQueryPlanSchema } from '../packages/mcp-server/src/tools/query-sandbox.js';
+import { REGISTERED_TOOLS } from '../packages/mcp-server/src/tools/catalog.js';
+import { redactSensitiveText } from '../packages/mcp-server/src/security.js';
 
 describe('Drizzle Sentinel MCP Tool Suite', () => {
   const sampleSchemaPath = path.resolve(__dirname, '../apps/demo-service/src/db/schema.ts');
@@ -124,6 +126,60 @@ describe('Drizzle Sentinel MCP Tool Suite', () => {
       expect(data.status).toBe('VALIDATED_SAFE');
       expect(data.detectedPerformanceSmells).toContain('MISSING_LIMIT: Query does not contain an explicit LIMIT clause. Large result sets may consume excessive memory.');
       expect(data.detectedPerformanceSmells.some((s: string) => s.includes('WILDCARD_PROJECTION'))).toBe(true);
+      expect((response as any).structuredContent).toEqual(data);
+    });
+
+    it('should block stacked multi-statement SQL injection and EXPLAIN ANALYZE mutations', async () => {
+      const stacked = await handleExplainQueryPlan({
+        sql: 'SELECT 1; DROP TABLE users;',
+        dialect: 'postgresql'
+      });
+      expect(stacked.isError).toBe(true);
+      expect(stacked.content[0].text).toContain('Multi-statement SQL');
+
+      const explainMutate = await handleExplainQueryPlan({
+        sql: 'EXPLAIN ANALYZE DELETE FROM users',
+        dialect: 'postgresql'
+      });
+      expect(explainMutate.isError).toBe(true);
+      expect(explainMutate.content[0].text).toContain('Forbidden mutating');
+    });
+  });
+
+  describe('5. Security Hardening, ToolAnnotations & Schema Strictness', () => {
+    it('should enforce .strict() schemas, bounds, and workspace path-traversal containment', async () => {
+      expect(() =>
+        inspectSchemaSchema.parse({ schemaPath: 'apps/demo-service/src/db/schema.ts', unexpectedKey: true })
+      ).toThrow();
+
+      expect(() =>
+        explainQueryPlanSchema.parse({ sql: 'SELECT 1 LIMIT 1', maxRows: 5000 })
+      ).toThrow();
+
+      const trav = await handleInspectSchema({ schemaPath: '../../etc/passwd.ts' });
+      expect(trav.isError).toBe(true);
+      expect(trav.content[0].text).toContain('Path traversal blocked');
+
+      const badExt = await handleLintMigration({ migrationFilePath: 'package.json', dialect: 'postgresql' });
+      expect(badExt.isError).toBe(true);
+      expect(badExt.content[0].text).toContain('Unsupported file extension');
+    });
+
+    it('should attach ToolAnnotations and additionalProperties:false to all tools and redact credentials', () => {
+      expect(REGISTERED_TOOLS).toHaveLength(4);
+      for (const tool of REGISTERED_TOOLS) {
+        expect(tool.annotations).toEqual({
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        });
+        expect(tool.inputSchema.additionalProperties).toBe(false);
+      }
+
+      const scrubbed = redactSensitiveText('Connection failed for postgres://admin:supersecret@db.internal:5432/prod');
+      expect(scrubbed).not.toContain('supersecret');
+      expect(scrubbed).toContain('[REDACTED]');
     });
   });
 });

@@ -12,6 +12,8 @@ import { inspectSchemaSchema, handleInspectSchema } from './tools/inspect-schema
 import { lintMigrationSchema, handleLintMigration } from './tools/lint-migration.js';
 import { detectSchemaDriftSchema, handleDetectSchemaDrift } from './tools/drift-doctor.js';
 import { explainQueryPlanSchema, handleExplainQueryPlan } from './tools/query-sandbox.js';
+import { REGISTERED_TOOLS } from './tools/catalog.js';
+import { redactSensitiveText } from './security.js';
 
 const server = new Server(
   {
@@ -30,111 +32,7 @@ const server = new Server(
  */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: [
-      {
-        name: 'inspect_drizzle_schema',
-        description: 'Deeply parses TypeScript Drizzle ORM schema files. Extracts table definitions, columns, data types, nullability, defaults, primary/foreign keys, and alerts on missing indexes.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            schemaPath: {
-              type: 'string',
-              description: 'Absolute or relative path to the Drizzle schema TypeScript file.'
-            },
-            inlineContent: {
-              type: 'string',
-              description: 'Optional inline TypeScript Drizzle schema code for direct inspection.'
-            }
-          },
-          required: ['schemaPath']
-        }
-      },
-      {
-        name: 'lint_drizzle_migration',
-        description: 'Enforces defensive database engineering rules on SQL migration scripts. Catches destructive actions (DROP TABLE, DROP COLUMN, adding NOT NULL without DEFAULT, unindexed foreign keys, locking table rewrites) before agents commit or apply migrations.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            sqlContent: {
-              type: 'string',
-              description: 'Raw SQL migration script text to lint.'
-            },
-            migrationFilePath: {
-              type: 'string',
-              description: 'Path to a .sql migration file.'
-            },
-            dialect: {
-              type: 'string',
-              enum: ['postgresql', 'sqlite', 'mysql'],
-              default: 'postgresql',
-              description: 'Target database dialect.'
-            }
-          }
-        }
-      },
-      {
-        name: 'detect_schema_drift',
-        description: 'Compares declared TypeScript Drizzle schema against live database table state to pinpoint schema drift, missing columns/tables, and outputs safe zero-downtime remediation SQL.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            schemaPath: {
-              type: 'string',
-              description: 'Path to the declared Drizzle TypeScript schema file.'
-            },
-            databaseTables: {
-              type: 'array',
-              description: 'Array of live database tables and columns for comparison.',
-              items: {
-                type: 'object',
-                properties: {
-                  name: { type: 'string' },
-                  columns: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        name: { type: 'string' },
-                        type: { type: 'string' },
-                        isNullable: { type: 'boolean' }
-                      },
-                      required: ['name', 'type']
-                    }
-                  }
-                },
-                required: ['name', 'columns']
-              }
-            }
-          },
-          required: ['schemaPath', 'databaseTables']
-        }
-      },
-      {
-        name: 'explain_query_plan',
-        description: 'Validates SQL queries against a strict read-only sandbox, detects missing LIMIT or unindexed sorting smells, and constructs an EXPLAIN execution plan query for performance verification.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            sql: {
-              type: 'string',
-              description: 'The SELECT SQL query to analyze.'
-            },
-            dialect: {
-              type: 'string',
-              enum: ['postgresql', 'sqlite', 'mysql'],
-              default: 'postgresql',
-              description: 'Target database dialect.'
-            },
-            maxRows: {
-              type: 'number',
-              default: 50,
-              description: 'Max row limit safety constraint.'
-            }
-          },
-          required: ['sql']
-        }
-      }
-    ]
+    tools: REGISTERED_TOOLS
   };
 });
 
@@ -171,7 +69,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: 'text',
-          text: `Tool execution error: ${error.message}`
+          text: `Tool execution error: ${redactSensitiveText(error?.message || String(error))}`
         }
       ]
     };

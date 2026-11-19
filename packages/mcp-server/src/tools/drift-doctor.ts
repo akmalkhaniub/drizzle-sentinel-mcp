@@ -1,17 +1,18 @@
 import { z } from 'zod';
 import { DrizzleSchemaParser } from '../services/drizzle-parser.js';
+import { redactSensitiveText, resolveSafeWorkspacePath } from '../security.js';
 
 export const detectSchemaDriftSchema = z.object({
-  schemaPath: z.string().describe('Path to the declared Drizzle TypeScript schema file.'),
+  schemaPath: z.string().min(1).max(512).describe('Path to the declared Drizzle TypeScript schema file.'),
   databaseTables: z.array(z.object({
-    name: z.string(),
+    name: z.string().min(1).max(128),
     columns: z.array(z.object({
-      name: z.string(),
-      type: z.string(),
+      name: z.string().min(1).max(128),
+      type: z.string().min(1).max(128),
       isNullable: z.boolean().default(true)
-    }))
-  })).describe('Array of current live database tables and columns for comparison.')
-});
+    }).strict()).max(200)
+  }).strict()).max(200).describe('Array of current live database tables and columns for comparison.')
+}).strict();
 
 export type DetectSchemaDriftInput = z.input<typeof detectSchemaDriftSchema>;
 
@@ -27,7 +28,8 @@ export interface SchemaDriftDifference {
 export async function handleDetectSchemaDrift(rawInput: DetectSchemaDriftInput) {
   try {
     const input = detectSchemaDriftSchema.parse(rawInput);
-    const inspection = DrizzleSchemaParser.parseFile(input.schemaPath);
+    const safePath = resolveSafeWorkspacePath(input.schemaPath, { allowedExtensions: ['.ts', '.mts', '.cts'] });
+    const inspection = DrizzleSchemaParser.parseFile(safePath);
     const declaredTables = new Map(inspection.tables.map(t => [t.name, t]));
     const dbTables = new Map(input.databaseTables.map(t => [t.name, t]));
 
@@ -78,19 +80,21 @@ export async function handleDetectSchemaDrift(rawInput: DetectSchemaDriftInput) 
     }
 
     const hasDrift = differences.length > 0;
+    const summary = {
+      hasDrift,
+      totalDifferences: differences.length,
+      differences,
+      generatedSafeMigration: differences.map(d => d.remediationSql).join('\n')
+    };
 
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({
-            hasDrift,
-            totalDifferences: differences.length,
-            differences,
-            generatedSafeMigration: differences.map(d => d.remediationSql).join('\n')
-          }, null, 2)
+          text: JSON.stringify(summary, null, 2)
         }
-      ]
+      ],
+      structuredContent: summary
     };
   } catch (error: any) {
     return {
@@ -98,7 +102,7 @@ export async function handleDetectSchemaDrift(rawInput: DetectSchemaDriftInput) 
       content: [
         {
           type: 'text' as const,
-          text: `Schema drift analysis failed: ${error.message}`
+          text: `Schema drift analysis failed: ${redactSensitiveText(error?.message || String(error))}`
         }
       ]
     };
