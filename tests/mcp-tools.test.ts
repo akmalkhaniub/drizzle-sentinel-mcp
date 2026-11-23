@@ -4,6 +4,9 @@ import { handleInspectSchema, inspectSchemaSchema } from '../packages/mcp-server
 import { handleLintMigration } from '../packages/mcp-server/src/tools/lint-migration.js';
 import { handleDetectSchemaDrift } from '../packages/mcp-server/src/tools/drift-doctor.js';
 import { handleExplainQueryPlan, explainQueryPlanSchema } from '../packages/mcp-server/src/tools/query-sandbox.js';
+import { handleGenerateMigrationPatch } from '../packages/mcp-server/src/tools/migration-patch.js';
+import { completeArgument, readDrizzleResource } from '../packages/mcp-server/src/tools/resources.js';
+import { handleStatelessMcpRequest } from '../packages/mcp-server/src/stateless-router.js';
 import { REGISTERED_TOOLS } from '../packages/mcp-server/src/tools/catalog.js';
 import { redactSensitiveText } from '../packages/mcp-server/src/security.js';
 
@@ -166,7 +169,7 @@ describe('Drizzle Sentinel MCP Tool Suite', () => {
     });
 
     it('should attach ToolAnnotations and additionalProperties:false to all tools and redact credentials', () => {
-      expect(REGISTERED_TOOLS).toHaveLength(4);
+      expect(REGISTERED_TOOLS).toHaveLength(5);
       for (const tool of REGISTERED_TOOLS) {
         expect(tool.annotations).toEqual({
           readOnlyHint: true,
@@ -180,6 +183,146 @@ describe('Drizzle Sentinel MCP Tool Suite', () => {
       const scrubbed = redactSensitiveText('Connection failed for postgres://admin:supersecret@db.internal:5432/prod');
       expect(scrubbed).not.toContain('supersecret');
       expect(scrubbed).toContain('[REDACTED]');
+    });
+  });
+
+  describe('6. DSM-001 Auto-Patch Generator, Resource Links & Completions', () => {
+    it('should generate non-destructive expand-only SQL + Drizzle TS migration and verify with rule engine', async () => {
+      const response = await handleGenerateMigrationPatch({
+        schemaPath: sampleSchemaPath,
+        dialect: 'postgresql',
+        migrationName: '0002_sync_orgs_and_invoices',
+        databaseTables: [
+          {
+            name: 'organizations',
+            columns: [
+              { name: 'id', type: 'uuid', isNullable: false },
+              { name: 'name', type: 'text', isNullable: false },
+              { name: 'legacy_notes', type: 'text', isNullable: true }
+            ]
+          },
+          {
+            name: 'users',
+            columns: [
+              { name: 'id', type: 'uuid', isNullable: false },
+              { name: 'org_id', type: 'uuid', isNullable: false },
+              { name: 'email', type: 'text', isNullable: false },
+              { name: 'full_name', type: 'text', isNullable: false },
+              { name: 'role', type: 'text', isNullable: false },
+              { name: 'is_active', type: 'boolean', isNullable: false },
+              { name: 'created_at', type: 'timestamp', isNullable: false }
+            ]
+          },
+          {
+            name: 'api_keys',
+            columns: [
+              { name: 'id', type: 'uuid', isNullable: false },
+              { name: 'org_id', type: 'uuid', isNullable: false },
+              { name: 'key_hash', type: 'text', isNullable: false },
+              { name: 'name', type: 'text', isNullable: false },
+              { name: 'created_at', type: 'timestamp', isNullable: false }
+            ]
+          }
+        ]
+      });
+
+      expect(response.isError).toBeUndefined();
+      const sc = (response as any).structuredContent;
+      expect(sc.ruleGateStatus).toBe('PASSED');
+      expect(sc.criticalViolations).toBe(0);
+      expect(sc.patchSql).toContain('ALTER TABLE "organizations" ADD COLUMN "slug" TEXT DEFAULT \'\' NOT NULL;');
+      expect(sc.patchSql).toContain('CREATE TABLE IF NOT EXISTS "invoices"');
+      expect(sc.patchSql).not.toContain('DROP COLUMN');
+      expect(sc.migrationTypeScript).toContain("import { sql } from 'drizzle-orm';");
+      expect(sc.migrationTypeScript).toContain('export async function up(');
+      expect(sc.advisories.some((a: string) => a.includes('legacy_notes'))).toBe(true);
+
+      const link = response.content.find((c: any) => c.type === 'resource_link') as any;
+      expect(link).toBeDefined();
+      expect(link.uri).toBe('drizzle://migrations/patches/0002_sync_orgs_and_invoices.sql');
+
+      const stored = readDrizzleResource(link.uri);
+      expect(stored.mimeType).toBe('application/sql');
+      expect(stored.text).toContain('CREATE TABLE IF NOT EXISTS "invoices"');
+    });
+
+    it('should provide context-aware completion/complete suggestions for dialects and workspace tables', () => {
+      const dialectComp = completeArgument({
+        ref: { type: 'ref/prompt', name: 'audit_migration' },
+        argument: { name: 'dialect', value: 'post' }
+      });
+      expect(dialectComp.values).toEqual(['postgresql']);
+
+      const tableComp = completeArgument({
+        ref: { type: 'ref/prompt', name: 'audit_migration' },
+        argument: { name: 'tableName', value: 'inv' }
+      });
+      expect(tableComp.values).toEqual(['invoices']);
+    });
+  });
+
+  describe('7. Stateless MCP (2026-07-28) Header Routing, Cacheable tools/list & W3C Trace Context', () => {
+    it('should serve cacheable tools/list with ttlMs, ETag, and 304 Not Modified', async () => {
+      const first = await handleStatelessMcpRequest({
+        method: 'POST',
+        headers: { 'Mcp-Method': 'tools/list' },
+        body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+      });
+
+      expect(first.status).toBe(200);
+      expect(first.headers['MCP-Protocol-Version']).toBe('2026-07-28');
+      expect(first.headers['Cache-Control']).toContain('max-age=60');
+      expect(first.headers.ETag).toBeDefined();
+      expect((first.body?.result as any)._meta.ttlMs).toBe(60000);
+
+      const second = await handleStatelessMcpRequest({
+        method: 'POST',
+        headers: { 'If-None-Match': first.headers.ETag },
+        body: { jsonrpc: '2.0', id: 2, method: 'tools/list' }
+      });
+      expect(second.status).toBe(304);
+    });
+
+    it('should route tools/call via Mcp-Method + Mcp-Name headers and propagate W3C traceparent', async () => {
+      const incomingTraceId = '4bf92f3577b34da6a3ce929d0e0e4736';
+      const parentSpanId = '00f067aa0ba902b7';
+      const res = await handleStatelessMcpRequest({
+        method: 'POST',
+        headers: {
+          'Mcp-Method': 'tools/call',
+          'Mcp-Name': 'inspect_drizzle_schema',
+          traceparent: `00-${incomingTraceId}-${parentSpanId}-01`
+        },
+        body: {
+          jsonrpc: '2.0',
+          id: 99,
+          method: 'tools/call',
+          params: {
+            name: 'inspect_drizzle_schema',
+            arguments: { schemaPath: sampleSchemaPath }
+          }
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers['X-Trace-Id']).toBe(incomingTraceId);
+      const otel = (res.body?.result as any)._meta.otel;
+      expect(otel.trace_id).toBe(incomingTraceId);
+      expect(otel.parent_span_id).toBe(parentSpanId);
+      expect(otel.span_id).not.toBe(parentSpanId);
+      expect(otel.context_source).toBe('http-header');
+
+      const mismatch = await handleStatelessMcpRequest({
+        method: 'POST',
+        headers: { 'Mcp-Method': 'tools/call', 'Mcp-Name': 'wrong_tool' },
+        body: {
+          jsonrpc: '2.0',
+          id: 100,
+          method: 'tools/call',
+          params: { name: 'inspect_drizzle_schema', arguments: { schemaPath: sampleSchemaPath } }
+        }
+      });
+      expect(mismatch.status).toBe(400);
     });
   });
 });

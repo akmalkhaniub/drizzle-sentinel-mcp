@@ -1,7 +1,7 @@
 [
   {
     "id": "DSM-001",
-    "status": "TODO",
+    "status": "DONE",
     "priority": 1,
     "title": "Add Non-Destructive Migration Auto-Patch Generator",
     "description": "When schema drift is detected, generate non-destructive SQL migration patches (e.g. ADD COLUMN with default values) and expose via `generate_migration_patch` MCP tool.",

@@ -20,12 +20,21 @@ export async function handleInspectSchema(rawInput: InspectSchemaInput) {
       result = DrizzleSchemaParser.parseFile(safePath);
     }
 
+    const tableLinks = result.tables.slice(0, 10).map((t) => ({
+      type: 'resource_link' as const,
+      uri: `drizzle://table/${t.dialect}/${t.name}`,
+      name: `${t.name} (${t.columns.length} cols)`,
+      description: `Drizzle ${t.dialect} table definition for '${t.name}'`,
+      mimeType: 'application/json'
+    }));
+
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify(result, null, 2)
-        }
+        },
+        ...tableLinks
       ],
       structuredContent: result
     };

@@ -132,5 +132,75 @@ export const REGISTERED_TOOLS = [
       required: ['sql'],
       additionalProperties: false
     }
+  },
+  {
+    name: 'generate_migration_patch',
+    description: 'Synthesizes non-destructive expand-only SQL and Drizzle TypeScript migration patches from live schema drift, self-verifies via MigrationRulesEngine, and returns a resource_link artifact.',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        schemaPath: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 512,
+          description: 'Workspace-contained path to the declared Drizzle TypeScript schema file.'
+        },
+        inlineContent: {
+          type: 'string',
+          maxLength: 100000,
+          description: 'Optional inline Drizzle schema TypeScript source.'
+        },
+        databaseTables: {
+          type: 'array',
+          maxItems: 200,
+          description: 'Snapshot of live database tables and columns.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', minLength: 1, maxLength: 128 },
+              columns: {
+                type: 'array',
+                maxItems: 200,
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string', minLength: 1, maxLength: 128 },
+                    type: { type: 'string', minLength: 1, maxLength: 128 },
+                    isNullable: { type: 'boolean' }
+                  },
+                  required: ['name', 'type'],
+                  additionalProperties: false
+                }
+              }
+            },
+            required: ['name', 'columns'],
+            additionalProperties: false
+          }
+        },
+        dialect: {
+          type: 'string',
+          enum: ['postgresql', 'sqlite', 'mysql'],
+          default: 'postgresql',
+          description: 'Target SQL dialect.'
+        },
+        migrationName: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: '^[a-zA-Z0-9_-]+$',
+          default: '0001_non_destructive_sync',
+          description: 'Identifier for the generated migration patch.'
+        },
+        notNullStrategy: {
+          type: 'string',
+          enum: ['safe-default', 'nullable-expand'],
+          default: 'safe-default',
+          description: 'Strategy for NOT NULL columns added without explicit defaults.'
+        }
+      },
+      required: ['schemaPath', 'databaseTables'],
+      additionalProperties: false
+    }
   }
 ];
